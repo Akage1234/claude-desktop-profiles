@@ -73,6 +73,7 @@ Delete its two `Claude <Name>.lnk` shortcuts and `icons\<Name>.ico`. To also del
 |---|---|
 | `ClaudeProfiles.cs` | The tray app (option A) |
 | `build.cmd` | Builds `ClaudeProfiles.exe` |
+| `make-icon.ps1` | Makes the app icon from your local Claude install at build time, so no Anthropic artwork is stored here |
 | `new-profile.ps1` | Creates a profile's icon and shortcuts |
 | `launch.ps1` | What the shortcut runs: starts Claude and tags its windows |
 | `AppId.cs` | Small Win32 interop that sets AppUserModelIDs on windows and shortcuts |
