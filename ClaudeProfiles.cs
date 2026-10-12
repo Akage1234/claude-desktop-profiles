@@ -276,6 +276,7 @@ static class Core
 static class Program
 {
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern int SetCurrentProcessExplicitAppUserModelID(string id);
     public static float Scale = 1;
     public static int S(float v) { return (int)Math.Round(v * Scale); }
 
@@ -298,6 +299,9 @@ static class Program
             return;
         }
 
+        // Our own taskbar identity. Without it, being started from a profile's shortcut (which carries
+        // that profile's ID), or matching a pin of this same exe, puts this window under that profile's button.
+        SetCurrentProcessExplicitAppUserModelID("ClaudeProfiles.App");
         SetProcessDPIAware();
         using (var g = Graphics.FromHwnd(IntPtr.Zero)) Scale = g.DpiX / 96f;
         Application.EnableVisualStyles();
@@ -320,6 +324,7 @@ class TrayApp : ApplicationContext
     readonly System.Threading.Timer timer;
     MainForm main;
     int busy;
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
 
     public TrayApp(EventWaitHandle showEvent)
     {
@@ -327,9 +332,19 @@ class TrayApp : ApplicationContext
         var h = ui.Handle;   // force handle so BeginInvoke works
         Profiles = Core.Load();
         AppIcon = LoadAppIcon(Size.Empty);
-        tray = new NotifyIcon { Icon = LoadAppIcon(SystemInformation.SmallIconSize), Text = "Claude Profiles", Visible = true, ContextMenuStrip = new ContextMenuStrip() };
-        tray.ContextMenuStrip.Opening += (s, e) => { BuildMenu(tray.ContextMenuStrip); e.Cancel = false; };
-        tray.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) ShowMain(); };
+        tray = new NotifyIcon { Icon = LoadAppIcon(SystemInformation.SmallIconSize), Text = "Claude Profiles", Visible = true };
+        var menu = new ContextMenuStrip();
+        tray.MouseClick += (s, e) =>
+        {
+            if (e.Button == MouseButtons.Left) { ShowMain(); return; }
+            if (e.Button != MouseButtons.Right) return;
+            // Placed by hand: WinForms' own tray-menu placement overlaps the taskbar on high-DPI screens.
+            BuildMenu(menu);
+            var at = Cursor.Position;
+            var area = Screen.FromPoint(at).WorkingArea;
+            SetForegroundWindow(ui.Handle);   // lets the menu close when clicking elsewhere
+            menu.Show(new Point(at.X, Math.Min(at.Y, area.Bottom)), ToolStripDropDownDirection.AboveLeft);
+        };
 
         var t = new Thread(() => { while (showEvent.WaitOne()) ui.BeginInvoke((Action)ShowMain); }) { IsBackground = true };
         t.Start();
