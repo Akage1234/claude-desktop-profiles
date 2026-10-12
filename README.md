@@ -11,7 +11,26 @@ Your existing Claude Desktop install and login are never touched. It stays your 
 - **Separate taskbar buttons:** Windows groups taskbar buttons by *AppUserModelID*. `launch.ps1` starts Claude, then runs hidden in the background and sets a per-profile ID on that profile's windows (`SHGetPropertyStoreForWindow`). The shortcut carries the same ID, so a pinned shortcut and its windows share one button. The helper exits when Claude closes.
 - **Badge icons:** Claude's logo with a coloured letter badge, like Chrome profiles.
 
-## Usage
+## Option A: tray app (recommended)
+
+A small Windows app: a tray icon with all your accounts, plus a window to add, open and manage them.
+
+```powershell
+git clone https://github.com/Akage1234/claude-desktop-profiles
+cd claude-desktop-profiles
+.uild.cmd              # compiles ClaudeProfiles.exe with the C# compiler built into Windows
+.\ClaudeProfiles.exe
+```
+
+- **+ Add account:** pick a name, badge letter and colour, then click *Add & Open* and sign in. Desktop and Start Menu shortcuts are created too, ready to pin.
+- **Tray icon:** left-click opens the window. Right-click lists every account (• means running) for one-click switching.
+- **Manage ▾:** change the badge, re-create shortcuts, open the data folder, or delete the profile (this asks first).
+- **Start with Windows:** while the app runs, it keeps every profile on its own taskbar button, however Claude was opened.
+- Profiles made with the PowerShell scripts, or earlier versions, are picked up automatically.
+
+App settings and icons are stored in `%LOCALAPPDATA%\ClaudeProfilesApp`. Profile data is in `Claude-<Name>` folders (see the Store note below).
+
+## Option B: PowerShell only
 
 Requirements: Windows 10/11 with Claude Desktop installed (Microsoft Store or the classic installer). No admin rights are needed.
 
@@ -50,6 +69,8 @@ Delete its two `Claude <Name>.lnk` shortcuts and `icons\<Name>.ico`. To also del
 
 | File | |
 |---|---|
+| `ClaudeProfiles.cs` | The tray app (option A) |
+| `build.cmd` | Builds `ClaudeProfiles.exe` |
 | `new-profile.ps1` | Creates a profile's icon and shortcuts |
 | `launch.ps1` | What the shortcut runs: starts Claude and tags its windows |
 | `AppId.cs` | Small Win32 interop that sets AppUserModelIDs on windows and shortcuts |
