@@ -491,7 +491,8 @@ class MainForm : Form
     {
         bool running = app.IsRunning(p);
         var bar = ColorTranslator.FromHtml(p.Color);
-        var row = new Panel { Height = S(76), Width = RowWidth(), Margin = new Padding(0, 0, 0, S(10)), BackColor = Color.White };
+        // Font set up front: the row isn't on the form yet, and PreferredWidth below must measure with the real font.
+        var row = new Panel { Height = S(76), Width = RowWidth(), Margin = new Padding(0, 0, 0, S(10)), BackColor = Color.White, Font = Font };
         row.Paint += (s, e) =>
         {
             e.Graphics.DrawRectangle(Pens.Gainsboro, 0, 0, row.Width - 1, row.Height - 1);
