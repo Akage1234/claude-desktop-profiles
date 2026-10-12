@@ -16,7 +16,14 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-class Profile { public string Name, Letter, Color; }
+class Profile
+{
+    public string Name, Letter, Color, Label;   // Label = optional display name
+    public bool IsMain { get { return Name == "Main"; } }   // the normal Claude install, no --user-data-dir
+    public bool HasBadge { get { return !string.IsNullOrEmpty(Letter); } }
+    public string Display { get { return string.IsNullOrEmpty(Label) ? Name : Label; } }
+    public string Key { get { return IsMain ? "" : Name; } }   // key in Core.Scan()
+}
 
 static class Core
 {
@@ -62,8 +69,11 @@ static class Core
             foreach (var line in File.ReadAllLines(ListFile))
             {
                 var f = line.Split('|');
-                if (f.Length == 3 && ValidName(f[0])) list.Add(new Profile { Name = f[0], Letter = f[1], Color = f[2] });
+                if (f.Length >= 3 && (f[0] == "Main" || ValidName(f[0])))
+                    list.Add(new Profile { Name = f[0], Letter = f[1], Color = f[2], Label = f.Length > 3 ? f[3] : "" });
             }
+        var main = list.FirstOrDefault(p => p.IsMain) ?? new Profile { Name = "Main", Letter = "", Color = "#D97757", Label = "" };
+        list.Remove(main); list.Insert(0, main);
         // Pick up profiles made elsewhere (e.g. new-profile.ps1). "Local State" marks a real Chromium profile.
         bool added = false;
         foreach (var root in DataRoots())
@@ -79,14 +89,14 @@ static class Core
             }
         }
         if (added) Save(list);
-        foreach (var p in list) if (!File.Exists(IconPath(p))) WriteIcon(p);
+        foreach (var p in list) if (p.HasBadge && !File.Exists(IconPath(p))) WriteIcon(p);
         return list;
     }
 
     public static void Save(List<Profile> list)
     {
         Directory.CreateDirectory(Home);
-        File.WriteAllLines(ListFile, list.Select(p => p.Name + "|" + p.Letter + "|" + p.Color));
+        File.WriteAllLines(ListFile, list.Select(p => p.Name + "|" + p.Letter + "|" + p.Color + "|" + (p.Label ?? "").Replace("|", "")));
     }
 
     // ---- icons ----
@@ -137,6 +147,7 @@ static class Core
             g.SmoothingMode = SmoothingMode.AntiAlias; g.InterpolationMode = InterpolationMode.HighQualityBicubic;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
             g.DrawImage(Logo(), 0, 0, size, size);
+            if (string.IsNullOrEmpty(letter)) return b;   // no badge: plain Claude logo
             float k = size / 256f, d = 104 * k, x = size - d - 4 * k;
             g.FillEllipse(Brushes.White, x - 7 * k, x - 7 * k, d + 14 * k, d + 14 * k);
             g.FillEllipse(new SolidBrush(ColorTranslator.FromHtml(color)), x, x, d, d);
@@ -150,7 +161,7 @@ static class Core
     // New file name per look, so Windows' icon cache never shows a stale icon.
     public static string IconPath(Profile p)
     {
-        return Path.Combine(Home, "icons", p.Name + "_" + p.Color.TrimStart('#') + "_" + ((int)p.Letter[0]).ToString("X") + ".ico");
+        return Path.Combine(Home, "icons", p.Name + "_" + p.Color.TrimStart('#') + "_" + (p.HasBadge ? ((int)p.Letter[0]).ToString("X") : "0") + ".ico");
     }
 
     public static void WriteIcon(Profile p)
@@ -174,8 +185,15 @@ static class Core
     {
         var exe = ClaudeExe();
         if (exe == null) { MessageBox.Show("Claude Desktop isn't installed. Get it from claude.ai/download.", "Claude Profiles"); return; }
-        if (string.IsNullOrEmpty(name)) Process.Start(exe);
+        if (string.IsNullOrEmpty(name) || name == "Main") Process.Start(exe);
         else Process.Start(exe, "--user-data-dir=\"" + Path.Combine(LocalApp, "Claude-" + name) + "\"");
+    }
+
+    // Claude's own close button only hides it to the tray, so stopping means ending its processes.
+    public static void Stop(IEnumerable<uint> pids)
+    {
+        foreach (var id in pids)
+            try { Process.GetProcessById((int)id).Kill(); } catch { }   // already gone with its parent
     }
 
     public static string[] ShortcutPaths(string name)
@@ -193,7 +211,7 @@ static class Core
             s.TargetPath = Application.ExecutablePath;
             s.Arguments = "--open " + p.Name;
             s.IconLocation = IconPath(p) + ",0";
-            s.Description = "Claude Desktop (" + p.Name + " profile)";
+            s.Description = "Claude Desktop (" + p.Display + ")";
             s.Save();
             AppId.TagShortcut(lnk, AppIdOf(p.Name));
         }
@@ -291,8 +309,8 @@ class TrayApp : ApplicationContext
         ui.CreateControl();
         var h = ui.Handle;   // force handle so BeginInvoke works
         Profiles = Core.Load();
-        AppIcon = Icon.FromHandle(new Bitmap(Core.Logo(), 32, 32).GetHicon());
-        tray = new NotifyIcon { Icon = AppIcon, Text = "Claude Profiles", Visible = true, ContextMenuStrip = new ContextMenuStrip() };
+        AppIcon = LoadAppIcon(Size.Empty);
+        tray = new NotifyIcon { Icon = LoadAppIcon(SystemInformation.SmallIconSize), Text = "Claude Profiles", Visible = true, ContextMenuStrip = new ContextMenuStrip() };
         tray.ContextMenuStrip.Opening += (s, e) => { BuildMenu(tray.ContextMenuStrip); e.Cancel = false; };
         tray.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) ShowMain(); };
 
@@ -301,7 +319,15 @@ class TrayApp : ApplicationContext
         timer = new System.Threading.Timer(_ => Tick(), null, 0, 1500);
     }
 
+    // app.ico is embedded by build.cmd (/resource) so every size stays crisp.
+    static Icon LoadAppIcon(Size size)
+    {
+        using (var s = typeof(TrayApp).Assembly.GetManifestResourceStream("app.ico"))
+            return size.IsEmpty ? new Icon(s) : new Icon(s, size);
+    }
+
     // Every 1.5 s: give each profile's windows their own taskbar ID, and track what's running.
+    // Main keeps Claude's normal taskbar button unless it was given a badge.
     void Tick()
     {
         if (Interlocked.Exchange(ref busy, 1) == 1) return;
@@ -311,9 +337,9 @@ class TrayApp : ApplicationContext
             foreach (var p in Profiles)
             {
                 List<uint> pids;
-                if (r.TryGetValue(p.Name, out pids))
+                if ((!p.IsMain || p.HasBadge) && r.TryGetValue(p.Key, out pids))
                     AppId.TagWindows(pids.ToArray(), Core.AppIdOf(p.Name),
-                        "\"" + Application.ExecutablePath + "\" --open " + p.Name, Core.IconPath(p) + ",0", "Claude " + p.Name);
+                        "\"" + Application.ExecutablePath + "\" --open " + p.Name, Core.IconPath(p) + ",0", "Claude " + p.Display);
             }
             var changed = !r.Keys.OrderBy(k => k).SequenceEqual(Running.Keys.OrderBy(k => k));
             Running = r;
@@ -323,7 +349,16 @@ class TrayApp : ApplicationContext
         finally { busy = 0; }
     }
 
-    public bool IsRunning(string name) { return Running.ContainsKey(name ?? ""); }
+    public bool IsRunning(Profile p) { return Running.ContainsKey(p.Key); }
+
+    public void Stop(Profile p, IWin32Window owner)
+    {
+        List<uint> pids;
+        if (!Running.TryGetValue(p.Key, out pids)) return;
+        if (MessageBox.Show(owner, "Stop Claude (" + p.Display + ")?\n\nAnything not yet sent in that window will be lost.", "Claude Profiles",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        Core.Stop(pids);
+    }
 
     public void Reload() { Profiles = Core.Load(); if (main != null) main.Rebuild(); }
 
@@ -341,11 +376,17 @@ class TrayApp : ApplicationContext
         m.Items.Clear();
         m.Items.Add(new ToolStripLabel("Claude Profiles") { ForeColor = Color.Gray });
         m.Items.Add(new ToolStripSeparator());
-        m.Items.Add("Main" + (IsRunning("") ? "   •" : ""), new Bitmap(Core.Logo(), 16, 16), (s, e) => Core.Open(null));
         foreach (var p in Profiles)
         {
-            var name = p.Name;
-            m.Items.Add(name + (IsRunning(name) ? "   •" : ""), Core.Badge(p.Letter, p.Color, 32), (s, e) => Core.Open(name));
+            var pr = p;
+            m.Items.Add(p.Display + (IsRunning(p) ? "   •" : ""), Core.Badge(p.Letter, p.Color, 32), (s, e) => Core.Open(pr.Name));
+        }
+        var running = Profiles.Where(IsRunning).ToList();
+        if (running.Count > 0)
+        {
+            var stop = new ToolStripMenuItem("Stop");
+            foreach (var p in running) { var pr = p; stop.DropDownItems.Add(p.Display, Core.Badge(p.Letter, p.Color, 32), (s, e) => Stop(pr, null)); }
+            m.Items.Add(stop);
         }
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add("Add account…", null, (s, e) => { ShowMain(); main.AddProfile(); });
@@ -399,18 +440,25 @@ class MainForm : Form
     {
         list.SuspendLayout();
         foreach (Control c in list.Controls.Cast<Control>().ToList()) c.Dispose();
-        list.Controls.Add(Row(null));
         foreach (var p in app.Profiles) list.Controls.Add(Row(p));
         list.ResumeLayout();
-        int running = (app.IsRunning("") ? 1 : 0) + app.Profiles.Count(p => app.IsRunning(p.Name));
-        count.Text = (app.Profiles.Count + 1) + " accounts · " + running + " running";
+        count.Text = app.Profiles.Count + " accounts · " + app.Profiles.Count(app.IsRunning) + " running";
+    }
+
+    Button RowButton(Control row, string text, ref int right)
+    {
+        var b = new Button { Text = text, Anchor = AnchorStyles.Top | AnchorStyles.Right, FlatStyle = FlatStyle.System };
+        b.Size = new Size(b.PreferredSize.Width + S(8), b.PreferredSize.Height + S(4));
+        b.Location = new Point(right - b.Width, (row.Height - b.Height) / 2);
+        row.Controls.Add(b);
+        right = b.Left - S(8);
+        return b;
     }
 
     Control Row(Profile p)
     {
-        string name = p == null ? null : p.Name;
-        bool running = app.IsRunning(name);
-        var bar = ColorTranslator.FromHtml(p == null ? "#D97757" : p.Color);
+        bool running = app.IsRunning(p);
+        var bar = ColorTranslator.FromHtml(p.Color);
         var row = new Panel { Height = S(76), Width = RowWidth(), Margin = new Padding(0, 0, 0, S(10)), BackColor = Color.White };
         row.Paint += (s, e) =>
         {
@@ -418,43 +466,41 @@ class MainForm : Form
             using (var b = new SolidBrush(bar)) e.Graphics.FillRectangle(b, S(10), S(14), S(4), row.Height - S(28));
         };
         var pic = new PictureBox { Size = new Size(S(44), S(44)), Location = new Point(S(26), S(16)), SizeMode = PictureBoxSizeMode.Zoom,
-            Image = p == null ? (Image)new Bitmap(Core.Logo(), S(44), S(44)) : Core.Badge(p.Letter, p.Color, S(44)) };
-        var nm = new Label { Text = p == null ? "Main" : p.Name, Font = new Font("Segoe UI Semibold", 11.5f), AutoSize = true, Location = new Point(S(82), S(12)) };
+            Image = Core.Badge(p.Letter, p.Color, S(44)) };
+        var nm = new Label { Text = p.Display, Font = new Font("Segoe UI Semibold", 11.5f), AutoSize = true, Location = new Point(S(82), S(12)) };
         var info = new Label { AutoSize = true, Location = new Point(S(84), S(42)),
             Text = running ? "●  Running" : "○  Not running",
             ForeColor = running ? Color.FromArgb(22, 163, 74) : Color.Gray };
         row.Controls.AddRange(new Control[] { pic, nm, info });
-        if (p == null)
-            row.Controls.Add(new Label { Text = "·  your normal Claude install", AutoSize = true, ForeColor = Color.Gray,
+        var note = p.IsMain ? "your normal Claude install" : (p.Display != p.Name ? "profile: " + p.Name : null);
+        if (note != null)
+            row.Controls.Add(new Label { Text = "·  " + note, AutoSize = true, ForeColor = Color.Gray,
                 Location = new Point(info.Left + info.PreferredWidth + S(6), info.Top) });
 
         int right = row.Width - S(16);
-        if (p != null)
-        {
-            var manage = new Button { Text = "Manage ▾", Anchor = AnchorStyles.Top | AnchorStyles.Right, FlatStyle = FlatStyle.System };
-            manage.Size = new Size(manage.PreferredSize.Width + S(8), manage.PreferredSize.Height + S(4));
-            manage.Location = new Point(right - manage.Width, (row.Height - manage.Height) / 2);
-            manage.Click += (s, e) => ManageMenu(p).Show(manage, new Point(0, manage.Height));
-            row.Controls.Add(manage);
-            right = manage.Left - S(8);
-        }
-        var open = new Button { Text = running ? "Switch to" : "Open Claude", Anchor = AnchorStyles.Top | AnchorStyles.Right, FlatStyle = FlatStyle.System };
-        open.Size = new Size(open.PreferredSize.Width + S(8), open.PreferredSize.Height + S(4));
-        open.Location = new Point(right - open.Width, (row.Height - open.Height) / 2);
-        open.Click += (s, e) => Core.Open(name);
-        row.Controls.Add(open);
+        var manage = RowButton(row, "Manage ▾", ref right);
+        manage.Click += (s, e) => ManageMenu(p).Show(manage, new Point(0, manage.Height));
+        if (running) RowButton(row, "Stop", ref right).Click += (s, e) => app.Stop(p, this);
+        RowButton(row, running ? "Switch to" : "Open Claude", ref right).Click += (s, e) => Core.Open(p.Name);
         return row;
     }
 
     ContextMenuStrip ManageMenu(Profile p)
     {
         var m = new ContextMenuStrip();
-        m.Items.Add("Change badge letter && color…", null, (s, e) => EditProfile(p));
-        m.Items.Add("Create Desktop && Start Menu shortcuts", null, (s, e) =>
+        m.Items.Add("Edit name && badge…", null, (s, e) => EditProfile(p));
+        var sc = m.Items.Add("Create Desktop && Start Menu shortcuts", null, (s, e) =>
         {
             Core.CreateShortcuts(p);
-            MessageBox.Show(this, "Shortcuts created. To pin: right-click the Desktop shortcut → Show more options → Pin to taskbar.", "Claude Profiles");
+            MessageBox.Show(this, "Shortcuts created. To pin: right-click the Desktop shortcut → Show more options → Pin to taskbar." +
+                (p.IsMain ? "\n\nUse this pin instead of the regular Claude pin, so Main's windows group under it." : ""), "Claude Profiles");
         });
+        if (p.IsMain)
+        {   // Main has no data folder of ours to open or delete.
+            sc.Enabled = p.HasBadge;
+            if (!p.HasBadge) sc.Text += " (give Main a badge first)";
+            return m;
+        }
         m.Items.Add("Open data folder", null, (s, e) =>
         {
             var d = Core.RealDataDir(p.Name);
@@ -485,19 +531,19 @@ class MainForm : Form
         using (var d = new ProfileDialog(p, app.Profiles))
         {
             if (d.ShowDialog(this) != DialogResult.OK) return;
-            p.Letter = d.Result.Letter; p.Color = d.Result.Color;
-            Core.WriteIcon(p);
+            p.Letter = d.Result.Letter; p.Color = d.Result.Color; p.Label = d.Result.Label;
+            if (p.HasBadge) Core.WriteIcon(p);
             Core.Save(app.Profiles);
-            if (Core.ShortcutPaths(p.Name).Any(File.Exists)) try { Core.CreateShortcuts(p); } catch { }
+            if (p.HasBadge && Core.ShortcutPaths(p.Name).Any(File.Exists)) try { Core.CreateShortcuts(p); } catch { }
             app.Reload();
         }
     }
 
     void DeleteProfile(Profile p)
     {
-        if (app.IsRunning(p.Name)) { MessageBox.Show(this, "Close the " + p.Name + " Claude window first (including its tray icon).", "Claude Profiles"); return; }
+        if (app.IsRunning(p)) { MessageBox.Show(this, "Stop " + p.Display + " first (Stop button).", "Claude Profiles"); return; }
         var data = Core.RealDataDir(p.Name);
-        var msg = "Delete the \"" + p.Name + "\" profile?\n\n" +
+        var msg = "Delete the \"" + p.Display + "\" profile?\n\n" +
                   "This signs it out on this PC and permanently deletes its local data" + (data != null ? ":\n" + data : ".") +
                   "\n\nIts shortcuts and icon are removed too. Chats saved in the Claude account itself are not affected.";
         if (MessageBox.Show(this, msg, "Delete profile", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
@@ -516,29 +562,35 @@ class MainForm : Form
 class ProfileDialog : Form
 {
     public Profile Result;
-    readonly TextBox name, letter;
+    readonly TextBox name, label, letter;
     readonly ComboBox color;
     readonly PictureBox preview;
     readonly Label error;
+    readonly bool isMain;
     static int S(float v) { return Program.S(v); }
 
     public ProfileDialog(Profile edit, List<Profile> existing)
     {
-        Text = edit == null ? "Add a Claude account" : "Edit " + edit.Name;
+        isMain = edit != null && edit.IsMain;
+        Text = edit == null ? "Add a Claude account" : "Edit " + edit.Display;
         Font = new Font("Segoe UI", 9.5f); AutoScaleMode = AutoScaleMode.None; BackColor = Color.White;
         FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = MinimizeBox = false; ShowInTaskbar = false;
-        StartPosition = FormStartPosition.CenterParent; ClientSize = new Size(S(380), S(300));
+        StartPosition = FormStartPosition.CenterParent; ClientSize = new Size(S(380), S(372));
 
         preview = new PictureBox { Size = new Size(S(64), S(64)), Location = new Point(S(20), S(18)), SizeMode = PictureBoxSizeMode.Zoom };
-        var help = new Label { Text = edit == null ? "Pick a name and a badge. Then sign in to that account in the Claude window that opens." : "Change how this profile's badge looks.",
-            Location = new Point(S(96), S(22)), Size = new Size(S(265), S(60)), ForeColor = Color.DimGray };
+        var help = new Label { Location = new Point(S(96), S(16)), Size = new Size(S(270), S(72)), ForeColor = Color.DimGray,
+            Text = edit == null ? "Pick a name and a badge. Then sign in to that account in the Claude window that opens."
+                 : isMain ? "Leave the letter empty to keep Claude's normal icon and taskbar button. With a badge, Main gets its own button too."
+                 : "Change how this profile is shown. Its sign-in and data stay as they are." };
 
-        var l1 = new Label { Text = "Name (letters, digits, - or _)", AutoSize = true, Location = new Point(S(20), S(96)) };
+        var l1 = new Label { Text = "Profile ID (letters, digits, - or _)", AutoSize = true, Location = new Point(S(20), S(96)) };
         name = new TextBox { Location = new Point(S(20), S(118)), Width = S(340), Text = edit == null ? "" : edit.Name, Enabled = edit == null };
-        var l2 = new Label { Text = "Badge letter", AutoSize = true, Location = new Point(S(20), S(154)) };
-        letter = new TextBox { Location = new Point(S(20), S(176)), Width = S(60), MaxLength = 2, Text = edit == null ? "" : edit.Letter };
-        var l3 = new Label { Text = "Color", AutoSize = true, Location = new Point(S(100), S(154)) };
-        color = new ComboBox { Location = new Point(S(100), S(176)), Width = S(150), DropDownStyle = ComboBoxStyle.DropDownList, DrawMode = DrawMode.OwnerDrawFixed };
+        var l4 = new Label { Text = "Display name (optional)", AutoSize = true, Location = new Point(S(20), S(154)) };
+        label = new TextBox { Location = new Point(S(20), S(176)), Width = S(340), MaxLength = 40, Text = edit == null ? "" : edit.Label };
+        var l2 = new Label { Text = "Badge letter", AutoSize = true, Location = new Point(S(20), S(212)) };
+        letter = new TextBox { Location = new Point(S(20), S(234)), Width = S(60), MaxLength = 2, Text = edit == null ? "" : edit.Letter };
+        var l3 = new Label { Text = "Color", AutoSize = true, Location = new Point(S(100), S(212)) };
+        color = new ComboBox { Location = new Point(S(100), S(234)), Width = S(150), DropDownStyle = ComboBoxStyle.DropDownList, DrawMode = DrawMode.OwnerDrawFixed };
         foreach (var c in Core.Colors) color.Items.Add(c[0]);
         color.DrawItem += (s, e) =>
         {
@@ -554,9 +606,9 @@ class ProfileDialog : Form
         int ci = edit == null ? existing.Count % Core.Colors.Length : Array.FindIndex(Core.Colors, c => c[1].Equals(edit.Color, StringComparison.OrdinalIgnoreCase));
         color.SelectedIndex = Math.Max(0, ci);
 
-        error = new Label { ForeColor = Color.Firebrick, AutoSize = true, Location = new Point(S(20), S(214)) };
-        var ok = new Button { Text = edit == null ? "Add && Open" : "Save", Size = new Size(S(110), S(32)), Location = new Point(S(250), S(252)), FlatStyle = FlatStyle.System };
-        var cancel = new Button { Text = "Cancel", Size = new Size(S(100), S(32)), Location = new Point(S(140), S(252)), DialogResult = DialogResult.Cancel, FlatStyle = FlatStyle.System };
+        error = new Label { ForeColor = Color.Firebrick, AutoSize = true, Location = new Point(S(20), S(272)) };
+        var ok = new Button { Text = edit == null ? "Add && Open" : "Save", Size = new Size(S(110), S(32)), Location = new Point(S(250), S(320)), FlatStyle = FlatStyle.System };
+        var cancel = new Button { Text = "Cancel", Size = new Size(S(100), S(32)), Location = new Point(S(140), S(320)), DialogResult = DialogResult.Cancel, FlatStyle = FlatStyle.System };
         AcceptButton = ok; CancelButton = cancel;
 
         EventHandler update = (s, e) =>
@@ -573,12 +625,14 @@ class ProfileDialog : Form
         {
             var n = name.Text.Trim();
             if (edit == null && !Core.ValidName(n)) { error.Text = "Use 1–32 letters, digits, - or _ (and not \"Main\")."; return; }
-            if (edit == null && existing.Any(p => p.Name.Equals(n, StringComparison.OrdinalIgnoreCase))) { error.Text = "A profile with that name already exists."; return; }
-            Result = new Profile { Name = edit == null ? n : edit.Name, Letter = Letter(), Color = Core.Colors[color.SelectedIndex][1] };
+            if (edit == null && existing.Any(p => p.Name.Equals(n, StringComparison.OrdinalIgnoreCase))) { error.Text = "A profile with that ID already exists."; return; }
+            Result = new Profile { Name = edit == null ? n : edit.Name, Letter = Letter(), Color = Core.Colors[color.SelectedIndex][1],
+                                   Label = label.Text.Trim().Replace("|", "") };
             DialogResult = DialogResult.OK;
         };
-        Controls.AddRange(new Control[] { preview, help, l1, name, l2, letter, l3, color, error, ok, cancel });
+        Controls.AddRange(new Control[] { preview, help, l1, name, l4, label, l2, letter, l3, color, error, ok, cancel });
     }
 
-    string Letter() { var t = letter.Text.Trim(); return t.Length > 0 ? t.ToUpper() : "?"; }
+    // Profiles always need a badge (it's how they're told apart); Main may have none.
+    string Letter() { var t = letter.Text.Trim().ToUpper(); return t.Length > 0 || isMain ? t : "?"; }
 }

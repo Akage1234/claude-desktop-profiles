@@ -24,7 +24,9 @@ cd claude-desktop-profiles
 
 - **+ Add account:** pick a name, badge letter and colour, then click *Add & Open* and sign in. Desktop and Start Menu shortcuts are created too, ready to pin.
 - **Tray icon:** left-click opens the window. Right-click lists every account (• means running) for one-click switching.
-- **Manage ▾:** change the badge, re-create shortcuts, open the data folder, or delete the profile (this asks first).
+- **Stop:** fully quits a running account. Claude's own close button only hides it to the tray.
+- **Manage ▾:** edit the display name and badge, re-create shortcuts, open the data folder, or delete the profile (this asks first).
+- **Main** (your normal install) can get a display name and badge too. With a badge it gets its own taskbar button. Pin it via *Manage → Create shortcuts*.
 - **Start with Windows:** while the app runs, it keeps every profile on its own taskbar button, however Claude was opened.
 - Profiles made with the PowerShell scripts, or earlier versions, are picked up automatically.
 
