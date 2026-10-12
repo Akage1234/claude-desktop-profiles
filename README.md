@@ -18,7 +18,7 @@ A small Windows app: a tray icon with all your accounts, plus a window to add, o
 ```powershell
 git clone https://github.com/Akage1234/claude-desktop-profiles
 cd claude-desktop-profiles
-.uild.cmd              # compiles ClaudeProfiles.exe with the C# compiler built into Windows
+.build.cmd              # compiles ClaudeProfiles.exe with the C# compiler built into Windows
 .\ClaudeProfiles.exe
 ```
 
