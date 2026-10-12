@@ -16,7 +16,7 @@ Your existing Claude Desktop install and login are never touched. It stays your 
 Requirements: Windows 10/11 with Claude Desktop installed (Microsoft Store or the classic installer). No admin rights are needed.
 
 ```powershell
-git clone https://github.com/<you>/claude-desktop-profiles
+git clone https://github.com/Akage1234/claude-desktop-profiles
 cd claude-desktop-profiles
 .\new-profile.ps1 -Name Work -Letter W -Color "#16A34A"
 ```
