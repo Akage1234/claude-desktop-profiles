@@ -190,10 +190,25 @@ static class Core
     }
 
     // Claude's own close button only hides it to the tray, so stopping means ending its processes.
+    // Ends the whole tree at once (taskkill /T) so Claude can't respawn helpers mid-way.
     public static void Stop(IEnumerable<uint> pids)
     {
+        var log = new System.Text.StringBuilder(DateTime.Now + " stop " + string.Join(",", pids) + "\r\n");
         foreach (var id in pids)
-            try { Process.GetProcessById((int)id).Kill(); } catch { }   // already gone with its parent
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("taskkill.exe", "/PID " + id + " /T /F")
+                    { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+                using (var p = Process.Start(psi))
+                {
+                    log.Append(p.StandardOutput.ReadToEnd()).Append(p.StandardError.ReadToEnd());
+                    p.WaitForExit(5000);
+                }
+            }
+            catch (Exception ex) { log.AppendLine(id + ": " + ex.Message); }
+        }
+        try { Directory.CreateDirectory(Home); File.AppendAllText(Path.Combine(Home, "stop.log"), log.ToString()); } catch { }
     }
 
     public static string[] ShortcutPaths(string name)
@@ -232,13 +247,15 @@ static class Core
     public static Dictionary<string, List<uint>> Scan()
     {
         var r = new Dictionary<string, List<uint>>(StringComparer.OrdinalIgnoreCase);
-        using (var s = new ManagementObjectSearcher("SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='claude.exe'"))
+        using (var s = new ManagementObjectSearcher("SELECT ProcessId, CommandLine, ExecutablePath FROM Win32_Process WHERE Name='claude.exe'"))
             foreach (ManagementObject o in s.Get())
             {
                 var cmd = o["CommandLine"] as string;
-                // Only Claude Desktop (Claude Code's CLI is also claude.exe).
-                if (cmd == null || (cmd.IndexOf(@"\WindowsApps\Claude_", StringComparison.OrdinalIgnoreCase) < 0 &&
-                                    cmd.IndexOf(@"\AnthropicClaude\", StringComparison.OrdinalIgnoreCase) < 0)) continue;
+                // Only Claude Desktop (Claude Code's CLI is also claude.exe). Judge by the real exe path:
+                // the main process's command line shows the claude-desktop.exe alias instead.
+                var exe = (o["ExecutablePath"] as string) ?? cmd ?? "";
+                if (cmd == null || (exe.IndexOf(@"\WindowsApps\Claude_", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                    exe.IndexOf(@"\AnthropicClaude\", StringComparison.OrdinalIgnoreCase) < 0)) continue;
                 string key = "";
                 int i = cmd.IndexOf("--user-data-dir=");
                 if (i >= 0)
